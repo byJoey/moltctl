@@ -55,26 +55,53 @@ function Show-Menu {
     [Console]::CursorVisible = $false
 
     try {
+        $w = [Console]::WindowWidth
+        $headerLines = $Header ? 3 : 0
+        $totalLines = $headerLines + $Options.Count
+
+        $top = [Console]::CursorTop
+        $bufferHeight = [Console]::BufferHeight
+
+        if ($top + $totalLines + 1 -gt $bufferHeight) {
+            $needed = $top + $totalLines + 1 - $bufferHeight
+            for ($i = 0; $i -le $needed; $i++) {
+                [Console]::WriteLine()
+            }
+            $top = [Console]::CursorTop
+        }
+
+        $anchorY = $top
+
         while ($true) {
-            Clear-Host
+            $row = $anchorY
 
             if ($Header) {
-                Write-Host ""
-                Write-Colored "  $Header" DarkCyan
-                Write-Colored "  ↑↓ 移动 · Enter 确认 · q 退出" DarkGray
-                Write-Host ""
+                [Console]::SetCursorPosition(0, $row)
+                $line = ("  $Header").PadRight($w - 1)
+                Write-Host $line -ForegroundColor DarkCyan
+                $row++
+
+                [Console]::SetCursorPosition(0, $row)
+                $hint = "  ↑↓ 移动 · Enter 确认 · q 退出".PadRight($w - 1)
+                Write-Host $hint -ForegroundColor DarkGray
+                $row++
+
+                [Console]::SetCursorPosition(0, $row)
+                Write-Host ("".PadRight($w - 1))
+                $row++
             }
 
             for ($i = 0; $i -lt $Options.Count; $i++) {
-                if ($i -eq $sel) {
-                    Write-Host "  > $($Options[$i])" -ForegroundColor Cyan
-                } else {
-                    Write-Host "    $($Options[$i])" -ForegroundColor Gray
-                }
+                [Console]::SetCursorPosition(0, $row)
+                $prefix = if ($i -eq $sel) { "  > " } else { "    " }
+                $txt = ($prefix + $Options[$i])
+                if ($txt.Length -ge $w) { $txt = $txt.Substring(0, $w - 1) } else { $txt = $txt.PadRight($w - 1) }
+                $color = if ($i -eq $sel) { 'Cyan' } else { 'Gray' }
+                Write-Host $txt -ForegroundColor $color
+                $row++
             }
 
             $key = [Console]::ReadKey($true)
-
             switch ($key.Key) {
                 'UpArrow'   { if ($sel -gt 0) { $sel-- } else { $sel = $Options.Count - 1 } }
                 'DownArrow' { if ($sel -lt $Options.Count - 1) { $sel++ } else { $sel = 0 } }
@@ -130,6 +157,17 @@ function Ensure-Git {
 function Refresh-Path {
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                  [System.Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Ensure-Fzf {
+    if (Get-Command fzf -ErrorAction SilentlyContinue) { return }
+    UI-Info "正在安装 fzf（用于列表选择）..."
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id junegunn.fzf -e --accept-source-agreements --accept-package-agreements --silent | Out-Null
+        Refresh-Path
+    } else {
+        UI-Warn "未检测到 winget，跳过 fzf 安装，将使用内置菜单"
+    }
 }
 
 
@@ -718,8 +756,18 @@ function Change-Model {
 
     if ($modelNames.Count -eq 0) { UI-Err "无可用模型"; Press-Enter; return }
 
-    $selected = Show-Menu -Header '选择默认模型' -Options $modelNames
+    Ensure-Fzf
+    $selected = $null
+    $fzfCmd = Get-Command fzf -ErrorAction SilentlyContinue
+    if ($fzfCmd) {
+        UI-Info "使用 fzf 选择模型（支持模糊搜索）"
+        $selected = $modelNames | & $fzfCmd.Source
+    } else {
+        $selected = Show-Menu -Header '选择默认模型' -Options $modelNames
+    }
     if (-not $selected) { return }
+
+    $selected = ($selected -split '\s+')[0]
 
     cmd /c openclaw models set "$selected" 2>$null
     Start-Gateway
